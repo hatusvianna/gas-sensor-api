@@ -1,9 +1,10 @@
 /*
- * Anesthetic Gas Sensor API
+ * Anesthetic Gas Sensor Frame Parser API
  * 
- * Serial communication with Phasein (Masimo) compatible gas analyzer
- * Protocol: 9600 baud, 8 data bits, no parity, 1 stop bit
- * Frame: 21 bytes, transmitted every 50ms
+ * Frame Protocol: 21 bytes, 9600 baud, 8 data bits, no parity, 1 stop bit
+ * 
+ * This API provides frame parsing and data structure definitions.
+ * Serial communication is handled by the application layer.
  */
 
 #ifndef GAS_SENSOR_H
@@ -23,12 +24,7 @@ extern "C" {
 #define GAS_SENSOR_OK                    0
 #define GAS_SENSOR_ERR_INVALID_FRAME    -1
 #define GAS_SENSOR_ERR_CHECKSUM         -2
-#define GAS_SENSOR_ERR_SERIAL_OPEN      -3
-#define GAS_SENSOR_ERR_SERIAL_READ      -4
-#define GAS_SENSOR_ERR_SERIAL_WRITE     -5
-#define GAS_SENSOR_ERR_CALLBACK         -6
-#define GAS_SENSOR_ERR_NULL_PARAM       -7
-#define GAS_SENSOR_ERR_MEMORY           -8
+#define GAS_SENSOR_ERR_NULL_PARAM       -3
 
 /* ============================================================================
  * Constants
@@ -153,6 +149,8 @@ typedef struct {
 } gas_sensor_adapter_reg_t;
 
 /* Data valid register (ID 0x04, byte 4) */
+
+/* Data valid register (ID 0x04, byte 4) */
 typedef struct {
     bool co2_out_of_range;          /* CO2 outside [0-10]% range */
     bool n2o_out_of_range;          /* N2O outside [0-100]% range */
@@ -235,146 +233,75 @@ typedef struct {
     /* Note: IDs 0x07-0x09 are reserved (no data) */
 } gas_sensor_slow_data_t;
 
-/* ============================================================================
- * Callback Function Prototype
- * 
- * Called when a complete frame is received and parsed successfully.
- * Parameters:
- *   - slow_data:   Pointer to slow data structure (updated with new fields)
- *   - waveform:    Pointer to waveform (fast) data structure
- *   - status:      Pointer to status summary structure
- * 
- * Returns:
- *   - 0:  Success
- *   - <0: Error code (processing should continue but error is logged)
- * ============================================================================ */
-
-typedef int (*gas_sensor_callback_t)(
-    gas_sensor_slow_data_t *slow_data,
-    gas_sensor_waveform_t *waveform,
-    gas_sensor_status_t *status
-);
-
-/* ============================================================================
- * Main Sensor Handle
- * 
- * Opaque handle for sensor communication state
- * ============================================================================ */
-
-typedef struct gas_sensor_handle *gas_sensor_handle_t;
 
 /* ============================================================================
  * Public API Functions
  * ============================================================================ */
-
-/*
- * Initialize the gas sensor communication
- * 
- * Parameters:
- *   - port: Serial port name (e.g., "/dev/ttyUSB0" on Linux, "COM3" on Windows)
- *   - callback: Function to call when a frame is received, or NULL
- *   - handle: Pointer to store the sensor handle
- * 
- * Returns:
- *   - GAS_SENSOR_OK: Success
- *   - GAS_SENSOR_ERR_SERIAL_OPEN: Failed to open serial port
- *   - GAS_SENSOR_ERR_MEMORY: Memory allocation failed
- */
-int gas_sensor_init(const char *port, gas_sensor_callback_t callback,
-                    gas_sensor_handle_t *handle);
-
-/*
- * Close the sensor and clean up resources
- * 
- * Parameters:
- *   - handle: Sensor handle to close
- * 
- * Returns:
- *   - GAS_SENSOR_OK: Success
- */
-int gas_sensor_close(gas_sensor_handle_t handle);
-
-/*
- * Read and process one frame from the sensor
- * 
- * Blocks until a complete frame is received. If a callback is registered,
- * it will be called when a valid frame is parsed.
- * 
- * Parameters:
- *   - handle: Sensor handle
- *   - slow_data: Pointer to slow data structure (optional, can be NULL)
- *   - waveform: Pointer to waveform data structure (optional, can be NULL)
- *   - status: Pointer to status structure (optional, can be NULL)
- * 
- * Returns:
- *   - GAS_SENSOR_OK: Frame received and parsed successfully
- *   - GAS_SENSOR_ERR_SERIAL_READ: Serial read error
- *   - GAS_SENSOR_ERR_INVALID_FRAME: Invalid frame detected
- *   - GAS_SENSOR_ERR_CHECKSUM: Checksum verification failed
- */
-int gas_sensor_read_frame(gas_sensor_handle_t handle,
-                         gas_sensor_slow_data_t *slow_data,
-                         gas_sensor_waveform_t *waveform,
-                         gas_sensor_status_t *status);
-
-/*
- * Parse a raw frame buffer
- * 
- * Parameters:
- *   - frame_data: Pointer to 21-byte frame buffer
- *   - slow_data: Pointer to slow data structure
- *   - waveform: Pointer to waveform data structure
- *   - status: Pointer to status structure
- * 
- * Returns:
- *   - GAS_SENSOR_OK: Frame parsed successfully
- *   - GAS_SENSOR_ERR_INVALID_FRAME: Invalid frame
- *   - GAS_SENSOR_ERR_CHECKSUM: Checksum failed
- */
 int gas_sensor_parse_frame(const uint8_t *frame_data,
                           gas_sensor_slow_data_t *slow_data,
                           gas_sensor_waveform_t *waveform,
-                          gas_sensor_status_t *status);
+                           gas_sensor_status_t *status);
 
-/*
+/**
+ * Parse a complete 21-byte gas sensor frame
+ * 
+ * This is the primary API function. It takes a pre-buffered frame and extracts:
+ *   - Waveform data (CO2, N2O, AA1, AA2, O2) from bytes 4-12
+ *   - Slow data fields (bytes 13-18) identified by frame ID
+ *   - Status byte interpretation (byte 3)
+ * 
+ * Frame format (21 bytes):
+ *   [0] 0xAA (sync), [1] 0x55 (sync), [2] Frame ID (0-9),
+ *   [3] Status, [4-12] Waveform, [13-18] Slow data, [19-20] Checksum
+ * 
+ * Note: Frame synchronization (finding 0xAA 0x55) is handled by the application.
+ *       This function expects a complete, properly aligned 21-byte buffer.
+ * 
+ * @param frame_data: Pointer to 21-byte frame buffer
+ * @param slow_data: Pointer to slow data structure (updated with new frame ID fields)
+ * @param waveform: Pointer to waveform data (updated with new concentrations)
+ * @param status: Pointer to status structure (updated with status byte interpretation)
+ * @return: GAS_SENSOR_OK on success, GAS_SENSOR_ERR_INVALID_FRAME if invalid,
+ *          GAS_SENSOR_ERR_CHECKSUM on verification failure, GAS_SENSOR_ERR_NULL_PARAM
+ */
+
+/**
  * Verify frame checksum
  * 
- * Parameters:
- *   - frame_data: Pointer to 21-byte frame buffer
+ * Validates the two's complement checksum in bytes 19-20.
  * 
- * Returns:
- *   - true: Checksum is valid
- *   - false: Checksum failed
+ * @param frame_data: Pointer to 21-byte frame buffer
+ * @return: true if checksum is valid, false otherwise
  */
 bool gas_sensor_verify_checksum(const uint8_t *frame_data);
 
-/*
+/**
  * Initialize slow data structure with default values
  * 
- * Parameters:
- *   - slow_data: Pointer to structure to initialize
+ * Sets all concentration values to GAS_SENSOR_CONC_INVALID (-1.0f),
+ * last_frame_id to 0, and clears all boolean flags.
+ * Call this once before parsing frames.
+ * 
+ * @param slow_data: Pointer to structure to initialize
  */
 void gas_sensor_init_slow_data(gas_sensor_slow_data_t *slow_data);
 
-/*
- * Convert concentration value (0xFF = invalid)
+/**
+ * Convert raw concentration byte to percentage (0-255 → 0-25.5%)
  * 
- * Parameters:
- *   - raw_value: Raw value from sensor (0-255)
+ * The sensor encodes concentrations as 0xFF = invalid/no data,
+ * other values as percentage * 10.
  * 
- * Returns:
- *   - Concentration in percent, or GAS_SENSOR_CONC_INVALID (-1.0f)
+ * @param raw_value: Raw value from sensor frame (0xFF = invalid)
+ * @return: Concentration in percent, or GAS_SENSOR_CONC_INVALID (-1.0f) if invalid
  */
 float gas_sensor_parse_concentration(uint8_t raw_value);
 
-/*
- * Get human-readable error message
+/**
+ * Get human-readable error message for error codes
  * 
- * Parameters:
- *   - error_code: Error code from API function
- * 
- * Returns:
- *   - Pointer to static error message string
+ * @param error_code: Error code from API function (GAS_SENSOR_OK, GAS_SENSOR_ERR_*)
+ * @return: Pointer to static error message string
  */
 const char *gas_sensor_strerror(int error_code);
 
